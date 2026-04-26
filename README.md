@@ -4,7 +4,7 @@
 
 A fast, single-file web app to scan files, URLs, domains, IPs, and hashes against 70+ security engines. No backend required — runs entirely in your browser.
 
-![License](https://img.shields.io/github/license/MSedge/msedge-scanner)
+![License](https://img.shields.io/github/license/MsedgeMC/MSedge-Scanner)
 ![HTML](https://img.shields.io/badge/built%20with-HTML%2FJS-10b981)
 ![VirusTotal](https://img.shields.io/badge/powered%20by-VirusTotal%20API%20v3-blue)
 
@@ -17,8 +17,8 @@ A fast, single-file web app to scan files, URLs, domains, IPs, and hashes agains
 - **IP & Domain lookup** — Threat intelligence on IP addresses and domains
 - **Hash lookup** — MD5, SHA-1, SHA-256 support
 - **70+ engines** — Full engine breakdown with detection details
+- **Multi-key rotation** — Add unlimited VirusTotal API keys; the worker rotates through them automatically to spread rate limits
 - **Scan history** — Stored locally in your browser (no server)
-- **Dark / light mode** — Persistent theme preference
 - **Export** — Download full JSON report for any scan
 - **Single file** — The entire app is one `index.html`, zero dependencies to install
 
@@ -26,60 +26,38 @@ A fast, single-file web app to scan files, URLs, domains, IPs, and hashes agains
 
 ## Setup
 
-### 1. Get a VirusTotal API key
+### 1. Get one or more VirusTotal API keys
 
-Sign up free at [virustotal.com](https://www.virustotal.com) and copy your API key from your profile.
+Sign up free at [virustotal.com](https://www.virustotal.com) and copy your API key from your profile. You can add as many keys as you want — the worker rotates through all of them round-robin to spread the rate limit across keys.
 
-### 2. Set up a CORS proxy (Cloudflare Worker)
+> **Free tier limit:** 4 requests per minute per key. With 3 keys you effectively get 12 req/min.
 
-VirusTotal's API doesn't allow direct browser requests due to CORS. You need a proxy. The easiest way is a free Cloudflare Worker:
+### 2. Deploy the Cloudflare Worker
 
-1. Go to [workers.cloudflare.com](https://workers.cloudflare.com) and create a free account
-2. Create a new Worker and paste the following code:
+VirusTotal's API doesn't allow direct browser requests due to CORS. The included `worker.js` handles this as a lightweight proxy.
 
-```js
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    const target = 'https://www.virustotal.com/api/v3' + url.pathname + url.search;
+1. Go to [dash.cloudflare.com](https://dash.cloudflare.com) → **Workers & Pages** → **Create Worker**
+2. Paste the entire contents of `worker.js` into the editor
+3. Click **Save and Deploy**
+4. Go to your Worker → **Settings** → **Variables** and add your API keys:
 
-    const headers = new Headers(request.headers);
-    headers.set('x-apikey', env.VT_API_KEY); // set in Worker env vars
+| Variable name | Value |
+|---|---|
+| `VT_KEY_1` | your first VirusTotal API key |
+| `VT_KEY_2` | your second key (optional) |
+| `VT_KEY_3` | your third key (optional) |
+| `VT_KEY_4` … | as many as you want |
 
-    const proxied = new Request(target, {
-      method: request.method,
-      headers,
-      body: request.method !== 'GET' ? request.body : undefined,
-    });
+> Mark each key as **Secret** so it's encrypted at rest. The worker auto-discovers however many `VT_KEY_N` variables you add — there's no cap.
 
-    const response = await fetch(proxied);
-    const newHeaders = new Headers(response.headers);
-    newHeaders.set('Access-Control-Allow-Origin', '*');
-    newHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    newHeaders.set('Access-Control-Allow-Headers', '*');
-
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: newHeaders });
-    }
-
-    return new Response(response.body, {
-      status: response.status,
-      headers: newHeaders,
-    });
-  }
-};
-```
-
-3. In your Worker settings → **Variables**, add:
-   - `VT_API_KEY` = your VirusTotal API key (mark as secret)
-4. Deploy and copy your Worker URL (e.g. `https://your-worker.workers.dev`)
+5. Copy your Worker URL (e.g. `https://your-name.workers.dev`)
 
 ### 3. Configure the app
 
-Open `index.html` and update the `PROXY` constant near the bottom:
+Open `index.html` and find the `PROXY` constant near the bottom of the file and update it:
 
 ```js
-const PROXY = "https://your-worker.workers.dev";
+const PROXY = "https://your-name.workers.dev";
 ```
 
 ### 4. Open in browser
@@ -88,21 +66,35 @@ That's it. Open `index.html` in any modern browser — no build step, no server 
 
 ---
 
+## API Key Rotation
+
+The worker supports unlimited VirusTotal API keys out of the box. Keys are rotated round-robin per request:
+
+- **1 key** → all requests use that key (4 req/min)
+- **2 keys** → alternates between them (~8 req/min effective)
+- **5 keys** → cycles through all five (~20 req/min effective)
+- **N keys** → N × 4 req/min effective throughput
+
+Add keys as `VT_KEY_1`, `VT_KEY_2`, `VT_KEY_3` … in your Worker's environment variables. No code changes needed — the worker detects them automatically.
+
+---
+
 ## Rate Limits
 
-VirusTotal's free API tier allows **4 requests per minute**. MSedge Scanner handles this automatically:
+MSedge Scanner is designed to stay within VirusTotal's free tier limits:
 
-- The **hash pre-check** and **analysis polling** use a raw fetch (not rate-limited) so they don't consume your quota
-- Only the final report fetch and URL/IP/hash lookups count against the limit
-- The UI shows a cooldown indicator when the limit is hit
+- The **SHA-256 hash pre-check** runs locally in the browser — zero API requests
+- **Analysis polling** uses a raw fetch that doesn't count against your quota
+- Only meaningful data requests (file reports, URL/IP/hash lookups) consume quota
+- The UI shows a cooldown indicator if the rate limit is reached
 
 ---
 
 ## Privacy
 
-- Your API key lives in your Cloudflare Worker environment variable — never in the HTML
-- Scan history is stored in `localStorage` in your browser only — nothing is sent to any external server beyond VirusTotal
-- Uploaded files are sent directly to VirusTotal for analysis per their [Privacy Policy](https://www.virustotal.com/gui/privacy-policy)
+- Your API keys live in Cloudflare Worker environment variables — never in the HTML source
+- Scan history is stored in `localStorage` in your browser only — nothing is sent to any server other than VirusTotal
+- Uploaded files are sent directly to VirusTotal per their [Privacy Policy](https://www.virustotal.com/gui/privacy-policy)
 
 ---
 
